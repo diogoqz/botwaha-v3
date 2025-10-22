@@ -218,6 +218,92 @@ async function sendToN8n(data) {
   }
 }
 
+// Função para processar contexto com imagens
+async function processContextWithImages(userId, chatId, groupType, contextMessage, userImages) {
+  try {
+    console.log(`🖼️ Processando contexto com ${userImages.length} imagem(ns) para usuário ${userId}`);
+    
+    // Processar imagens com o contexto fornecido
+    const imagesWithBase64 = [];
+    for (const image of userImages) {
+      try {
+        const base64Image = await downloadImageAsBase64(image.mediaUrl);
+        imagesWithBase64.push(base64Image);
+      } catch (error) {
+        console.error('❌ Erro ao processar imagem:', error.message);
+      }
+    }
+    
+    if (imagesWithBase64.length === 0) {
+      console.log('⚠️ Nenhuma imagem foi processada com sucesso');
+      await sendWhatsAppMessage(chatId, '❌ Erro ao processar as imagens. Tente novamente.');
+      return {
+        success: false,
+        message: 'Erro ao processar imagens',
+        groupType: groupType
+      };
+    }
+    
+    // Combinar múltiplas imagens em uma única imagem
+    let combinedImage;
+    try {
+      combinedImage = await combineImagesIntoOne(imagesWithBase64);
+    } catch (error) {
+      console.error('❌ Erro ao combinar imagens:', error.message);
+      await sendWhatsAppMessage(chatId, '❌ Erro ao processar as imagens. Tente novamente.');
+      return {
+        success: false,
+        message: 'Erro ao combinar imagens',
+        groupType: groupType
+      };
+    }
+
+    // Enviar para n8n para análise
+    const analysisData = {
+      userId: userId,
+      groupId: chatId,
+      groupType: groupType,
+      combinedImage: combinedImage,
+      context: contextMessage,
+      totalImages: imagesWithBase64.length,
+      hasMultipleImages: imagesWithBase64.length > 1,
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('🤖 Enviando contexto para análise com IA...');
+    const aiResponse = await sendToN8n(analysisData);
+    
+    if (aiResponse && aiResponse.response) {
+      // Enviar resposta da IA para o usuário
+      console.log('✅ Resposta da IA recebida, enviando para o usuário...');
+      await sendWhatsAppMessage(chatId, `🤖 Análise das imagens (${groupType}):\n\n${aiResponse.response}`);
+    } else {
+      console.log('⚠️ Nenhuma resposta da IA ou erro no n8n, enviando mensagem padrão...');
+      await sendWhatsAppMessage(chatId, `🤖 Análise concluída! As imagens foram processadas com sucesso. (${groupType})`);
+    }
+    
+    return {
+      success: true,
+      message: 'Contexto processado e imagens analisadas',
+      groupType: groupType
+    };
+    
+  } catch (error) {
+    console.error('❌ Erro ao processar contexto com imagens:', error.message);
+    console.error('Stack trace:', error.stack);
+    try {
+      await sendWhatsAppMessage(chatId, '❌ Erro ao processar as imagens. Tente novamente.');
+    } catch (sendError) {
+      console.error('❌ Erro ao enviar mensagem de erro:', sendError.message);
+    }
+    return {
+      success: false,
+      message: 'Erro ao processar contexto',
+      groupType: groupType
+    };
+  }
+}
+
 // Função para processar imagens após timeout
 async function processImagesAfterTimeout(userId, groupId) {
   try {
@@ -459,65 +545,12 @@ async function processWhatsAppMessage(messageData) {
       if (userBuffer && userBuffer.images.length > 0) {
         console.log('📝 Contexto recebido para imagens pendentes...');
         
-        // Processar imagens com o contexto fornecido
-        const imagesWithBase64 = [];
-        for (const image of userBuffer.images) {
-          try {
-            const base64Image = await downloadImageAsBase64(image.mediaUrl);
-            imagesWithBase64.push(base64Image);
-          } catch (error) {
-            console.error('❌ Erro ao processar imagem:', error.message);
-          }
-        }
-        
-        if (imagesWithBase64.length > 0) {
-          // Combinar múltiplas imagens em uma única imagem
-          let combinedImage;
-          try {
-            combinedImage = await combineImagesIntoOne(imagesWithBase64);
-          } catch (error) {
-            console.error('❌ Erro ao combinar imagens:', error.message);
-            await sendWhatsAppMessage(chatId, '❌ Erro ao processar as imagens. Tente novamente.');
-            imageBuffer.delete(userId);
-            return {
-              success: false,
-              message: 'Erro ao combinar imagens',
-              groupType: groupType
-            };
-          }
-
-          // Enviar para n8n para análise
-          const analysisData = {
-            userId: userId,
-            groupId: chatId,
-            groupType: groupType,
-            combinedImage: combinedImage,
-            context: messageBody,
-            totalImages: imagesWithBase64.length,
-            hasMultipleImages: imagesWithBase64.length > 1,
-            timestamp: new Date().toISOString()
-          };
-
-          console.log('🤖 Enviando contexto para análise com IA...');
-          const aiResponse = await sendToN8n(analysisData);
-          
-          if (aiResponse && aiResponse.response) {
-            // Enviar resposta da IA para o usuário
-            console.log('✅ Resposta da IA recebida, enviando para o usuário...');
-            await sendWhatsAppMessage(chatId, `🤖 Análise das imagens (${groupType}):\n\n${aiResponse.response}`);
-          } else {
-            console.log('⚠️ Nenhuma resposta da IA ou erro no n8n, enviando mensagem padrão...');
-            await sendWhatsAppMessage(chatId, `🤖 Análise concluída! As imagens foram processadas com sucesso. (${groupType})`);
-          }
-        }
+        // Processar imagens com o contexto fornecido usando nova função
+        const result = await processContextWithImages(userId, chatId, groupType, messageBody, userBuffer.images);
         
         // Limpar buffer
         imageBuffer.delete(userId);
-        return {
-          success: true,
-          message: 'Contexto processado e imagens analisadas',
-          groupType: groupType
-        };
+        return result;
       }
     }
     
